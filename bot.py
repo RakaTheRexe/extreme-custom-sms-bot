@@ -1,186 +1,137 @@
+# ১. লাইব্রেরি ইনস্টল
+!pip install python-telegram-bot requests nest_asyncio
+
 import logging
 import requests
 import nest_asyncio
 import asyncio
 import json
-import time
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+
+# =================CONFIGURATIONS=================
+TELEGRAM_TOKEN = '8345293297:AAE6yn3WPN-3Wobg68EVUo4rMMxSAhBaLkk'
+SMS_API_URL = "http://sms.greenheritageit.com/smsapi"
+
+# আপনার API Key
+SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
+
+# Mask Name
+MASK_NAME = "MultiSports"
+# ================================================
+
+nest_asyncio.apply()
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# ================= CONFIG =================
-TELEGRAM_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
-ADMIN_ID = 7008757477
-CHANNEL_USERNAME = "@ExtremeLevelTech"
-
-SMS_API_URL = "http://sms.greenheritageit.com/smsapi"
-SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
-MASK_NAME = "MultiSports"
-
-# ================= MEMORY DB =================
-users = {}
-
-def today():
-    return time.strftime("%Y-%m-%d")
-
-def init_user(uid):
-    if uid not in users:
-        users[uid] = {
-            "balance": 10,
-            "daily": 0,
-            "day": today()
-        }
-
-# ================= SYSTEM =================
-nest_asyncio.apply()
-logging.basicConfig(level=logging.INFO)
-
-# ================= FORCE JOIN =================
-async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-    except:
-        pass
-
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "📢 চ্যানেলে জয়েন করুন", "url": "https://t.me/ExtremeLevelTech"}],
-            [{"text": "✅ ভেরিফাই করুন", "callback_data": "verify"}]
-        ]
-    }
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="🚫 প্রবেশ নিষিদ্ধ\n\nবট ব্যবহার করতে হলে আগে চ্যানেলে জয়েন করুন 👇",
-        reply_markup=keyboard
-    )
-    return False
-
-async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
-        if member.status in ["member", "administrator", "creator"]:
-            await q.edit_message_text("✅ ভেরিফিকেশন সফল!\nএখন /start লিখুন")
-        else:
-            await q.edit_message_text("❌ এখনো জয়েন করা হয়নি")
-    except:
-        await q.edit_message_text("❌ ভেরিফাই ব্যর্থ")
-
-# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join(update, context):
-        return
-    init_user(update.effective_user.id)
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=(
-            "🚀 Extreme Custom SMS\n\n"
-            "📩 SMS পাঠাতে:\n"
-            "/sms 01XXXXXXXX hello\n\n"
-            "💰 ব্যালেন্স: /balance"
-        )
+        text="বট রেডি! ✅\nSMS পাঠাতে লিখুন:\n`/sms 019XXXXXXXX Hello World`",
+        parse_mode='Markdown'
     )
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join(update, context):
-        return
-    uid = update.effective_user.id
-    init_user(uid)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"💰 আপনার ব্যালেন্স: {users[uid]['balance']} SMS"
-    )
-
-async def sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join(update, context):
-        return
-
-    uid = update.effective_user.id
-    init_user(uid)
+async def send_sms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     args = context.args
 
+    # ফরম্যাট চেক
     if len(args) < 2:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="⚠️ ফরম্যাট:\n/sms নম্বর মেসেজ"
-        )
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ ভুল ফরম্যাট! লিখুন: `/sms নম্বর মেসেজ`", parse_mode='Markdown')
         return
 
-    if users[uid]["day"] != today():
-        users[uid]["daily"] = 0
-        users[uid]["day"] = today()
+    mobile_no = args[0]
+    # মেসেজের সব শব্দ জোড়া লাগানো হচ্ছে (স্পেসসহ)
+    message_body = ' '.join(args[1:])
 
-    if users[uid]["balance"] <= 0:
-        await context.bot.send_message(update.effective_chat.id, "❌ ব্যালেন্স শেষ")
-        return
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔄 সার্ভারে রিকোয়েস্ট পাঠানো হচ্ছে...")
 
-    if users[uid]["daily"] >= 5:
-        await context.bot.send_message(update.effective_chat.id, "❌ আজকের limit শেষ (৫)")
-        return
-
-    number = args[0]
-    message = " ".join(args[1:])
-
-    payload = {
-        "api_key": SMS_API_KEY,
-        "transaction_type": "T",
-        "campaign_id": "",
-        "sms_data": [
-            {
-                "recipient": number,
-                "sender_id": MASK_NAME,
-                "message": message
-            }
-        ]
-    }
-
-    requests.post(
-        SMS_API_URL,
-        data=json.dumps(payload, separators=(',', ':')),
-        headers={"Content-Type": "application/json"}
-    )
-
-    users[uid]["balance"] -= 1
-    users[uid]["daily"] += 1
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="✅ SMS পাঠানো হয়েছে"
-    )
-
-async def addbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
     try:
-        uid = int(context.args[0])
-        amt = int(context.args[1])
-        init_user(uid)
-        users[uid]["balance"] += amt
-        await context.bot.send_message(update.effective_chat.id, "✅ ব্যালেন্স যোগ করা হয়েছে")
-    except:
-        await context.bot.send_message(update.effective_chat.id, "Usage: /addbalance user amount")
+        # Payload তৈরি
+        payload = {
+            "api_key": SMS_API_KEY,
+            "transaction_type": "T",
+            "campaign_id": "",
+            "sms_data": [
+                {
+                    "recipient": mobile_no,
+                    "sender_id": MASK_NAME,
+                    "message": message_body
+                }
+            ]
+        }
 
-# ================= MAIN =================
+        # 🔥 স্পেশাল ফিক্স: Compact JSON তৈরি করা
+        # separators=(',', ':') ব্যবহার করায় JSON এর স্ট্রাকচারে কোনো বাড়তি স্পেস থাকবে না।
+        # এটি সার্ভারকে কনফিউজড হওয়া থেকে বাঁচাবে।
+        json_payload = json.dumps(payload, separators=(',', ':'))
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+
+        loop = asyncio.get_running_loop()
+
+        # data=json_payload ব্যবহার করা হচ্ছে (json=payload নয়)
+        response = await loop.run_in_executor(
+            None,
+            lambda: requests.post(SMS_API_URL, data=json_payload, headers=headers)
+        )
+
+        # রেসপন্স হ্যান্ডলিং
+        response_text = response.text
+        try:
+            response_data = response.json()
+            api_status = str(response_data.get('status', '')).lower()
+            api_msg = response_data.get('message', '')
+
+            # সফল হলে
+            if response.status_code == 200 and api_status == 'success':
+                 await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"✅ সফল হয়েছে! (Success)\n\n"
+                         f"📱 নম্বর: {mobile_no}\n"
+                         f"✉️ মেসেজ: {message_body}\n"
+                         f"🔍 সার্ভার মেসেজ: {api_msg}"
+                )
+            else:
+                # ফেইল হলে
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"❌ ফেইলড! (Failed)\nStatus: {api_status}\nMessage: {api_msg}\nServer Raw: {response_text}"
+                )
+        except:
+             await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"❌ রেসপন্স এরর:\n{response_text}"
+            )
+
+    except Exception as e:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            text=f"❌ সিস্টেম এরর: {str(e)}"
+        )
+
 async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("sms", sms))
-    app.add_handler(CommandHandler("addbalance", addbalance))
-    app.add_handler(CallbackQueryHandler(verify, pattern="verify"))
-    print("Bot running...")
-    await app.run_polling()
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('sms', send_sms_command))
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    print("🤖 Bot is running...")
+    await application.run_polling()
+
+if __name__ == '__main__':
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+        loop.create_task(main())
