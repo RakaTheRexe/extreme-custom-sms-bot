@@ -43,17 +43,24 @@ CREATE TABLE IF NOT EXISTS users (
     referred_by INTEGER
 )
 """)
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_ref (
+    user_id INTEGER PRIMARY KEY,
+    referrer_id INTEGER
+)
+""")
 db.commit()
 
 def get_user(uid):
     cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     return cursor.fetchone()
 
-def add_user(uid, ref=None):
+def add_user(uid):
     if not get_user(uid):
         cursor.execute(
-            "INSERT INTO users (user_id, balance, referred_by) VALUES (?, ?, ?)",
-            (uid, DEFAULT_BALANCE, ref)
+            "INSERT INTO users (user_id, balance, referred_by) VALUES (?, ?, NULL)",
+            (uid, DEFAULT_BALANCE)
         )
         db.commit()
 
@@ -104,20 +111,45 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     await q.edit_message_text("❌ এখনো Join করা হয়নি")
 
-# ================= START =================
+# ================= START (Referral FIX) =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    # Save referral before join
+    if context.args:
+        try:
+            ref = int(context.args[0])
+            if ref != uid:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO pending_ref (user_id, referrer_id) VALUES (?, ?)",
+                    (uid, ref)
+                )
+                db.commit()
+        except:
+            pass
+
     if not await force_join(update, context):
         return
 
-    uid = update.effective_user.id
+    add_user(uid)
 
-    if context.args:
-        ref = int(context.args[0])
-        if ref != uid and not get_user(uid):
-            add_user(uid, ref)
-            update_balance(ref, REF_BONUS)
-    else:
-        add_user(uid)
+    # Apply referral after join
+    cursor.execute("SELECT referrer_id FROM pending_ref WHERE user_id=?", (uid,))
+    row = cursor.fetchone()
+
+    if row:
+        referrer = row[0]
+        cursor.execute("SELECT referred_by FROM users WHERE user_id=?", (uid,))
+        already = cursor.fetchone()
+
+        if already and already[2] is None and referrer != uid:
+            update_balance(referrer, REF_BONUS)
+            cursor.execute(
+                "UPDATE users SET referred_by=? WHERE user_id=?",
+                (referrer, uid)
+            )
+            cursor.execute("DELETE FROM pending_ref WHERE user_id=?", (uid,))
+            db.commit()
 
     keyboard = ReplyKeyboardMarkup(
         [["📩 Send SMS", "💰 Balance"], ["👥 Invite"]],
@@ -201,7 +233,6 @@ async def sms_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     uid = q.from_user.id
 
-    # FORCE JOIN AGAIN
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
         if member.status not in ["member", "administrator", "creator"]:
