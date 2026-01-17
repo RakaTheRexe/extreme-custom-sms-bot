@@ -1,7 +1,6 @@
-import os
 import sqlite3
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram import (
     Update,
@@ -11,20 +10,22 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    ContextTypes,
     CallbackQueryHandler,
     MessageHandler,
-    ContextTypes,
     filters,
 )
 
-# ================= ENV =================
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-CHANNEL = os.getenv("CHANNEL")
+# ================= BOT CONFIG (HARDCODED) =================
+BOT_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
+ADMIN_ID = 7008757477
+CHANNEL = "@ExtremeLevelTech"
 
-SMS_API_URL = os.getenv("SMS_API_URL")
-SMS_API_KEY = os.getenv("SMS_API_KEY")
-SENDER_ID = os.getenv("SENDER_ID")
+SMS_API_URL = "http://sms.greenheritageit.com/smsapi"
+SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
+SENDER_ID = "MultiSports"
+
+INVITE_REWARD = 5
 
 # ================= DATABASE =================
 db = sqlite3.connect("database.db", check_same_thread=False)
@@ -47,7 +48,6 @@ CREATE TABLE IF NOT EXISTS sms_logs (
     time TEXT
 )
 """)
-
 db.commit()
 
 # ================= HELPERS =================
@@ -85,78 +85,76 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await force_join(update, context):
         await update.message.reply_text(
-            f"❌ আগে channel join করুন:\nhttps://t.me/{CHANNEL.replace('@','')}"
+            f"❌ আগে Channel join করো:\nhttps://t.me/{CHANNEL.replace('@','')}"
         )
         return
 
     # Invite system
     if context.args:
         inviter = int(context.args[0])
-        cur.execute("SELECT invited_by FROM users WHERE user_id=?", (uid,))
-        r = cur.fetchone()
-        if not r:
-            cur.execute(
-                "INSERT INTO users (user_id, balance, invited_by) VALUES (?,?,?)",
-                (uid, 5, inviter)
-            )
-            add_balance(inviter, 5)
-            db.commit()
+        if inviter != uid:
+            cur.execute("SELECT invited_by FROM users WHERE user_id=?", (uid,))
+            r = cur.fetchone()
+            if not r:
+                cur.execute(
+                    "INSERT INTO users (user_id, balance, invited_by) VALUES (?,?,?)",
+                    (uid, 5, inviter)
+                )
+                add_balance(inviter, INVITE_REWARD)
+                db.commit()
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Send SMS", callback_data="send")],
-        [InlineKeyboardButton("💰 My Balance", callback_data="balance")],
-        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="invite")],
+        [InlineKeyboardButton("📨 Send SMS", callback_data="send")],
+        [InlineKeyboardButton("💰 Balance", callback_data="balance")],
+        [InlineKeyboardButton("🎁 Invite", callback_data="invite")],
     ])
+    await update.message.reply_text("🤖 Extreme Custom SMS Bot", reply_markup=kb)
 
-    await update.message.reply_text(
-        "🤖 Extreme Custom SMS Bot\n\nChoose option:",
-        reply_markup=kb
-    )
+# ================= BUTTON HANDLER =================
+user_state = {}
 
-# ================= USER BUTTONS =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     uid = q.from_user.id
 
     if q.data == "balance":
-        await q.edit_message_text(f"💰 Your balance: {get_balance(uid)} SMS")
+        await q.edit_message_text(f"💰 Balance: {get_balance(uid)}")
 
     elif q.data == "invite":
         link = f"https://t.me/{context.bot.username}?start={uid}"
         await q.edit_message_text(
-            f"🎁 Invite & Earn\n\n"
-            f"Per invite = 5 balance\n\n"
-            f"🔗 {link}"
+            f"🎁 Invite & Earn\n\nPer invite = {INVITE_REWARD}\n\n{link}"
         )
 
     elif q.data == "send":
-        context.user_data["step"] = "number"
-        await q.edit_message_text("📱 Enter phone number:")
+        if get_balance(uid) <= 0:
+            await q.edit_message_text("❌ Balance শেষ")
+            return
+        user_state[uid] = {"step": "number"}
+        await q.edit_message_text("📱 Number পাঠাও:")
 
-# ================= STEP HANDLER =================
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= SMS STEP FLOW =================
+async def message_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-
-    if not await force_join(update, context):
+    if uid not in user_state:
         return
 
-    step = context.user_data.get("step")
+    state = user_state[uid]
 
-    if step == "number":
-        context.user_data["number"] = update.message.text
-        context.user_data["step"] = "message"
-        await update.message.reply_text("✉️ Enter message:")
+    if state["step"] == "number":
+        state["number"] = update.message.text
+        state["step"] = "message"
+        await update.message.reply_text("✉️ Message পাঠাও:")
         return
 
-    if step == "message":
+    if state["step"] == "message":
         if get_balance(uid) <= 0:
             await update.message.reply_text("❌ Balance শেষ")
-            context.user_data.clear()
+            user_state.pop(uid)
             return
 
-        number = context.user_data["number"]
+        number = state["number"]
         message = update.message.text
 
         params = {
@@ -175,7 +173,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ SMS Failed")
 
-        context.user_data.clear()
+        user_state.pop(uid)
 
 # ================= ADMIN =================
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,8 +181,9 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Analytics", callback_data="analytics")],
-        [InlineKeyboardButton("📄 Export Logs", callback_data="export")],
+        [InlineKeyboardButton("👤 User Balances", callback_data="userbal")],
+        [InlineKeyboardButton("➕ Add Balance", callback_data="addbal")],
+        [InlineKeyboardButton("📊 Export Logs", callback_data="export")],
     ])
     await update.message.reply_text("👑 Admin Panel", reply_markup=kb)
 
@@ -195,32 +194,36 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.from_user.id != ADMIN_ID:
         return
 
-    if q.data == "analytics":
-        today = datetime.now().strftime("%Y-%m-%d")
-        week = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if q.data == "userbal":
+        cur.execute("SELECT user_id, balance FROM users")
+        rows = cur.fetchall()
+        txt = "👤 USER BALANCES\n\n"
+        for u, b in rows:
+            txt += f"{u} → {b}\n"
+        await q.edit_message_text(txt)
 
-        cur.execute("SELECT COUNT(*) FROM sms_logs WHERE time LIKE ?", (f"{today}%",))
-        daily = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM sms_logs WHERE time >= ?", (week,))
-        weekly = cur.fetchone()[0]
-
-        await q.edit_message_text(
-            f"📊 Analytics\n\n"
-            f"📅 Today: {daily}\n"
-            f"📈 Weekly: {weekly}"
-        )
+    elif q.data == "addbal":
+        await q.edit_message_text("Send: USER_ID AMOUNT")
 
     elif q.data == "export":
         cur.execute("SELECT * FROM sms_logs")
         rows = cur.fetchall()
-
         with open("sms_logs.csv", "w", encoding="utf-8") as f:
             f.write("id,user_id,number,message,time\n")
             for r in rows:
                 f.write(",".join([str(x) for x in r]) + "\n")
+        await q.edit_message_text("📊 Export ready (sms_logs.csv)")
 
-        await q.edit_message_text("📄 sms_logs.csv generated")
+# Admin text input (balance add)
+async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    parts = update.message.text.split()
+    if len(parts) == 2:
+        uid = int(parts[0])
+        amt = int(parts[1])
+        add_balance(uid, amt)
+        await update.message.reply_text("✅ Balance added")
 
 # ================= MAIN =================
 def main():
@@ -228,11 +231,12 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(CallbackQueryHandler(buttons, pattern="^(send|balance|invite)$"))
     app.add_handler(CallbackQueryHandler(admin_buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_flow))
 
-    print("🤖 Bot running...")
+    print("🤖 Worker bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
