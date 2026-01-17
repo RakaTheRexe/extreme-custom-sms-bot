@@ -154,7 +154,6 @@ async def start_sms_flow(update, context):
     )
 
 async def text_handler(update, context):
-    # 🔒 FORCE JOIN FOR ALL BUTTONS
     if not await force_join(update, context):
         return
 
@@ -202,7 +201,7 @@ async def sms_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     uid = q.from_user.id
 
-    # 🔒 FORCE JOIN AGAIN
+    # FORCE JOIN AGAIN
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
         if member.status not in ["member", "administrator", "creator"]:
@@ -294,9 +293,14 @@ async def main():
     app.add_handler(CommandHandler("addbalance", addbalance))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_handler(CallbackQueryHandler(verify, pattern="verify"))
-    app.add_handler(CallbackQueryHandler(admin_cb, pattern="checkbal|addbal"))
-    app.add_handler(CallbackQueryHandler(sms_confirm_callback, pattern="confirm_sms|cancel_sms"))
+    app.add_handler(CallbackQueryHandler(verify, pattern="^verify$"))
+    app.add_handler(CallbackQueryHandler(admin_cb, pattern="^(checkbal|addbal)$"))
+    app.add_handler(
+        CallbackQueryHandler(
+            sms_confirm_callback,
+            pattern="^(confirm_sms|cancel_sms)$"
+        )
+    )
 
     print("Bot running...")
     await app.run_polling()
