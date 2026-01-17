@@ -1,41 +1,79 @@
+import os
 import logging
 import requests
+import sqlite3
 import asyncio
-import nest_asyncio
+from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    CallbackQueryHandler
+    CallbackQueryHandler,
 )
 
-# ================== CONFIG ==================
-TELEGRAM_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
+# ================= CONFIG =================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+SMS_API_KEY = os.getenv("SMS_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-ADMIN_ID = 7008757477
 CHANNEL_USERNAME = "@ExtremeLevelTech"
 
-SMS_API_BASE = "http://sms.greenheritageit.com/smsapi"
-SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
-SENDER_ID = "MultiSports"          # চাইলে বদলাতে পারো
+SMS_API_URL = "http://sms.greenheritageit.com/smsapi"
+SENDER_ID = "MultiSports"
 TRANSACTION_TYPE = "TransactionType"
 CAMPAIGN_ID = "campaignId"
 
-# ================== MEMORY DB ==================
-users = {}
+DB_FILE = "database.db"
 
-def init_user(uid):
-    if uid not in users:
-        users[uid] = {
-            "balance": 10   # default balance
-        }
-
-# ================== LOGGING ==================
+# ================= LOG =================
 logging.basicConfig(level=logging.INFO)
-nest_asyncio.apply()
 
-# ================== FORCE JOIN ==================
+# ================= DATABASE =================
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    balance INTEGER DEFAULT 10
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS sms_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    number TEXT,
+    message TEXT,
+    time TEXT
+)
+""")
+
+conn.commit()
+
+def get_user(uid):
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    row = cursor.fetchone()
+    if row is None:
+        cursor.execute("INSERT INTO users (user_id, balance) VALUES (?,?)", (uid, 10))
+        conn.commit()
+        return 10
+    return row[0]
+
+def update_balance(uid, amount):
+    cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (amount, uid))
+    conn.commit()
+
+def log_sms(uid, number, message):
+    cursor.execute(
+        "INSERT INTO sms_logs (user_id, number, message, time) VALUES (?,?,?,?)",
+        (uid, number, message, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+
+# ================= FORCE JOIN =================
 async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     try:
@@ -45,78 +83,59 @@ async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-    keyboard = InlineKeyboardMarkup([
+    kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Join Channel", url="https://t.me/ExtremeLevelTech")],
         [InlineKeyboardButton("✅ Verify", callback_data="verify")]
     ])
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="❌ বট ব্যবহার করতে হলে আগে চ্যানেলে জয়েন করুন",
-        reply_markup=keyboard
+    await update.message.reply_text(
+        "❌ আগে আমাদের চ্যানেলে Join করো",
+        reply_markup=kb
     )
     return False
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = query.from_user.id
-
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
         if member.status in ["member", "administrator", "creator"]:
-            await query.edit_message_text("✅ Verify সফল! এখন /start লিখুন")
+            await q.edit_message_text("✅ Verify successful! এখন /start লিখো")
             return
     except:
         pass
+    await q.edit_message_text("❌ এখনো Join করোনি")
 
-    await query.edit_message_text("❌ এখনো জয়েন করা হয়নি")
-
-# ================== COMMANDS ==================
+# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await force_join(update, context):
         return
-
-    uid = update.effective_user.id
-    init_user(uid)
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=(
-            "🤖 Extreme Custom SMS Bot\n\n"
-            "📩 SMS পাঠাতে:\n"
-            "/sms 01XXXXXXXX message\n\n"
-            "💰 ব্যালেন্স দেখতে:\n"
-            "/balance"
-        )
+    get_user(update.effective_user.id)
+    await update.message.reply_text(
+        "🤖 Extreme Custom SMS Bot\n\n"
+        "📩 /sms number message\n"
+        "💰 /balance"
     )
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    init_user(uid)
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"💰 আপনার ব্যালেন্স: {users[uid]['balance']} SMS"
-    )
+    bal = get_user(update.effective_user.id)
+    await update.message.reply_text(f"💰 আপনার ব্যালেন্স: {bal}")
 
 async def sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await force_join(update, context):
         return
 
     uid = update.effective_user.id
-    init_user(uid)
+    bal = get_user(uid)
 
-    if users[uid]["balance"] <= 0:
-        await context.bot.send_message(update.effective_chat.id, "❌ ব্যালেন্স শেষ")
+    if bal <= 0:
+        await update.message.reply_text("❌ ব্যালেন্স শেষ")
         return
 
     args = context.args
     if len(args) < 2:
-        await context.bot.send_message(
-            update.effective_chat.id,
-            "⚠️ ফরম্যাট:\n/sms 01XXXXXXXX message"
-        )
+        await update.message.reply_text("Usage: /sms 01XXXXXXXX message")
         return
 
     number = args[0]
@@ -131,53 +150,49 @@ async def sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "message": message
     }
 
-    try:
-        r = requests.get(SMS_API_BASE, params=params, timeout=15)
+    r = requests.get(SMS_API_URL, params=params, timeout=15)
 
-        if r.status_code == 200:
-            users[uid]["balance"] -= 1
-            await context.bot.send_message(
-                update.effective_chat.id,
-                f"✅ SMS পাঠানো হয়েছে\n📱 {number}\n💰 Remaining: {users[uid]['balance']}"
-            )
-        else:
-            await context.bot.send_message(
-                update.effective_chat.id,
-                "❌ SMS পাঠানো যায়নি"
-            )
-    except Exception as e:
-        await context.bot.send_message(
-            update.effective_chat.id,
-            f"❌ Error: {e}"
-        )
+    if r.status_code == 200:
+        update_balance(uid, bal - 1)
+        log_sms(uid, number, message)
+        await update.message.reply_text("✅ SMS পাঠানো হয়েছে")
+    else:
+        await update.message.reply_text("❌ SMS ব্যর্থ")
 
-# ================== ADMIN ==================
-async def addbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ADMIN PANEL =================
+async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
+    cursor.execute("SELECT user_id, balance FROM users")
+    rows = cursor.fetchall()
+
+    text = "👑 USER BALANCE LIST\n\n"
+    for uid, bal in rows:
+        text += f"👤 {uid} → 💰 {bal}\n"
+
+    await update.message.reply_text(text)
+
+async def addbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
     try:
         uid = int(context.args[0])
         amt = int(context.args[1])
-        init_user(uid)
-        users[uid]["balance"] += amt
-        await context.bot.send_message(
-            update.effective_chat.id,
-            "✅ Balance added"
-        )
+        bal = get_user(uid)
+        update_balance(uid, bal + amt)
+        await update.message.reply_text("✅ Balance added")
     except:
-        await context.bot.send_message(
-            update.effective_chat.id,
-            "Usage:\n/addbalance user_id amount"
-        )
+        await update.message.reply_text("Usage: /addbalance user_id amount")
 
-# ================== MAIN ==================
+# ================= MAIN =================
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("sms", sms))
+    app.add_handler(CommandHandler("users", users_list))   # ADMIN ONLY
     app.add_handler(CommandHandler("addbalance", addbalance))
     app.add_handler(CallbackQueryHandler(verify, pattern="verify"))
 
