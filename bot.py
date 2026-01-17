@@ -1,11 +1,7 @@
 import os
 import sqlite3
-import logging
 import requests
-import asyncio
-import threading
-from datetime import datetime
-from flask import Flask, send_file
+from datetime import datetime, timedelta
 
 from telegram import (
     Update,
@@ -15,25 +11,20 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes,
     CallbackQueryHandler,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
-# ================= ENV CONFIG =================
+# ================= ENV =================
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL = os.getenv("CHANNEL")
+
+SMS_API_URL = os.getenv("SMS_API_URL")
 SMS_API_KEY = os.getenv("SMS_API_KEY")
 SENDER_ID = os.getenv("SENDER_ID")
-
-SMS_API_URL = "http://sms.greenheritageit.com/smsapi"
-TRANSACTION_TYPE = "TransactionType"
-CAMPAIGN_ID = "campaignId"
-
-# ================= LOG =================
-logging.basicConfig(level=logging.INFO)
 
 # ================= DATABASE =================
 db = sqlite3.connect("database.db", check_same_thread=False)
@@ -42,7 +33,7 @@ cur = db.cursor()
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    balance INTEGER DEFAULT 0,
+    balance INTEGER DEFAULT 5,
     invited_by INTEGER
 )
 """)
@@ -56,6 +47,7 @@ CREATE TABLE IF NOT EXISTS sms_logs (
     time TEXT
 )
 """)
+
 db.commit()
 
 # ================= HELPERS =================
@@ -63,20 +55,14 @@ def get_balance(uid):
     cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
     r = cur.fetchone()
     if not r:
-        cur.execute(
-            "INSERT INTO users (user_id, balance) VALUES (?, ?)",
-            (uid, 0)
-        )
+        cur.execute("INSERT INTO users (user_id, balance) VALUES (?,5)", (uid,))
         db.commit()
-        return 0
+        return 5
     return r[0]
 
 def add_balance(uid, amt):
     bal = get_balance(uid)
-    cur.execute(
-        "UPDATE users SET balance=? WHERE user_id=?",
-        (bal + amt, uid)
-    )
+    cur.execute("UPDATE users SET balance=? WHERE user_id=?", (bal + amt, uid))
     db.commit()
 
 def log_sms(uid, num, msg):
@@ -86,7 +72,6 @@ def log_sms(uid, num, msg):
     )
     db.commit()
 
-# ================= FORCE JOIN =================
 async def force_join(update, context):
     try:
         m = await context.bot.get_chat_member(CHANNEL, update.effective_user.id)
@@ -100,75 +85,83 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await force_join(update, context):
         await update.message.reply_text(
-            f"❌ আগে Channel join করো:\nhttps://t.me/{CHANNEL.replace('@','')}"
+            f"❌ আগে channel join করুন:\nhttps://t.me/{CHANNEL.replace('@','')}"
         )
         return
 
-    # Invite reward
+    # Invite system
     if context.args:
         inviter = int(context.args[0])
-        if inviter != uid:
-            cur.execute("SELECT invited_by FROM users WHERE user_id=?", (uid,))
-            r = cur.fetchone()
-            if not r:
-                cur.execute(
-                    "INSERT INTO users (user_id, balance, invited_by) VALUES (?, ?, ?)",
-                    (uid, 5, inviter)
-                )
-                add_balance(inviter, 5)
-                db.commit()
+        cur.execute("SELECT invited_by FROM users WHERE user_id=?", (uid,))
+        r = cur.fetchone()
+        if not r:
+            cur.execute(
+                "INSERT INTO users (user_id, balance, invited_by) VALUES (?,?,?)",
+                (uid, 5, inviter)
+            )
+            add_balance(inviter, 5)
+            db.commit()
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📩 Send SMS", callback_data="send")],
-        [InlineKeyboardButton("💰 Balance", callback_data="balance")],
+        [InlineKeyboardButton("📤 Send SMS", callback_data="send")],
+        [InlineKeyboardButton("💰 My Balance", callback_data="balance")],
+        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="invite")],
     ])
-    await update.message.reply_text("🤖 Extreme Custom SMS Bot", reply_markup=kb)
 
-# ================= BUTTON HANDLER =================
-user_state = {}
+    await update.message.reply_text(
+        "🤖 Extreme Custom SMS Bot\n\nChoose option:",
+        reply_markup=kb
+    )
 
+# ================= USER BUTTONS =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
+    uid = q.from_user.id
+
     if q.data == "balance":
-        bal = get_balance(q.from_user.id)
-        await q.edit_message_text(f"💰 Balance: {bal}")
+        await q.edit_message_text(f"💰 Your balance: {get_balance(uid)} SMS")
+
+    elif q.data == "invite":
+        link = f"https://t.me/{context.bot.username}?start={uid}"
+        await q.edit_message_text(
+            f"🎁 Invite & Earn\n\n"
+            f"Per invite = 5 balance\n\n"
+            f"🔗 {link}"
+        )
 
     elif q.data == "send":
-        if get_balance(q.from_user.id) <= 0:
-            await q.edit_message_text("❌ Balance নেই")
-            return
-        user_state[q.from_user.id] = {"step": "number"}
-        await q.edit_message_text("📱 Number পাঠাও:")
+        context.user_data["step"] = "number"
+        await q.edit_message_text("📱 Enter phone number:")
 
-# ================= MESSAGE FLOW =================
-async def message_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= STEP HANDLER =================
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if uid not in user_state:
+
+    if not await force_join(update, context):
         return
 
-    state = user_state[uid]
+    step = context.user_data.get("step")
 
-    if state["step"] == "number":
-        state["number"] = update.message.text
-        state["step"] = "message"
-        await update.message.reply_text("✉️ Message পাঠাও:")
+    if step == "number":
+        context.user_data["number"] = update.message.text
+        context.user_data["step"] = "message"
+        await update.message.reply_text("✉️ Enter message:")
+        return
 
-    elif state["step"] == "message":
-        number = state["number"]
-        message = update.message.text
-
+    if step == "message":
         if get_balance(uid) <= 0:
             await update.message.reply_text("❌ Balance শেষ")
-            user_state.pop(uid)
+            context.user_data.clear()
             return
+
+        number = context.user_data["number"]
+        message = update.message.text
 
         params = {
             "apiKey": SMS_API_KEY,
             "senderId": SENDER_ID,
-            "transactionType": TRANSACTION_TYPE,
-            "campaignId": CAMPAIGN_ID,
             "mobileNo": number,
             "message": message
         }
@@ -182,7 +175,7 @@ async def message_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ SMS Failed")
 
-        user_state.pop(uid)
+        context.user_data.clear()
 
 # ================= ADMIN =================
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,8 +183,8 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👤 User Balance", callback_data="userbal")],
-        [InlineKeyboardButton("📊 Export SMS Logs", callback_data="export")],
+        [InlineKeyboardButton("📊 Analytics", callback_data="analytics")],
+        [InlineKeyboardButton("📄 Export Logs", callback_data="export")],
     ])
     await update.message.reply_text("👑 Admin Panel", reply_markup=kb)
 
@@ -202,13 +195,21 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.from_user.id != ADMIN_ID:
         return
 
-    if q.data == "userbal":
-        cur.execute("SELECT user_id, balance FROM users")
-        rows = cur.fetchall()
-        txt = "👤 USER BALANCES\n\n"
-        for u, b in rows:
-            txt += f"{u} → {b}\n"
-        await q.edit_message_text(txt)
+    if q.data == "analytics":
+        today = datetime.now().strftime("%Y-%m-%d")
+        week = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        cur.execute("SELECT COUNT(*) FROM sms_logs WHERE time LIKE ?", (f"{today}%",))
+        daily = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM sms_logs WHERE time >= ?", (week,))
+        weekly = cur.fetchone()[0]
+
+        await q.edit_message_text(
+            f"📊 Analytics\n\n"
+            f"📅 Today: {daily}\n"
+            f"📈 Weekly: {weekly}"
+        )
 
     elif q.data == "export":
         cur.execute("SELECT * FROM sms_logs")
@@ -219,39 +220,20 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for r in rows:
                 f.write(",".join([str(x) for x in r]) + "\n")
 
-        await q.edit_message_text("📊 Export ready\nVisit /logs")
-
-# ================= WEB DASHBOARD =================
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    cur.execute("SELECT COUNT(*) FROM users")
-    users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM sms_logs")
-    sms = cur.fetchone()[0]
-    return f"<h2>Dashboard</h2><p>Users: {users}</p><p>SMS Sent: {sms}</p>"
-
-@app.route("/logs")
-def logs():
-    return send_file("sms_logs.csv", as_attachment=True)
-
-def run_web():
-    app.run(host="0.0.0.0", port=8080)
+        await q.edit_message_text("📄 sms_logs.csv generated")
 
 # ================= MAIN =================
-async def main():
-    threading.Thread(target=run_web, daemon=True).start()
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    bot = ApplicationBuilder().token(BOT_TOKEN).build()
-    bot.add_handler(CommandHandler("start", start))
-    bot.add_handler(CommandHandler("admin", admin))
-    bot.add_handler(CallbackQueryHandler(admin_buttons, pattern="^(userbal|export)$"))
-    bot.add_handler(CallbackQueryHandler(buttons))
-    bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_flow))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CallbackQueryHandler(buttons, pattern="^(send|balance|invite)$"))
+    app.add_handler(CallbackQueryHandler(admin_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print("🤖 Bot running...")
-    await bot.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
