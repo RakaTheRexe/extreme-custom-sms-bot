@@ -131,26 +131,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= BALANCE =================
 async def balance(update, context):
+    if not await force_join(update, context):
+        return
     user = get_user(update.effective_user.id)
     await update.message.reply_text(f"💰 আপনার ব্যালেন্স: {user[1]} SMS")
 
 # ================= INVITE =================
 async def invite(update, context):
+    if not await force_join(update, context):
+        return
     uid = update.effective_user.id
     link = f"https://t.me/{context.bot.username}?start={uid}"
     await update.message.reply_text(
         f"👥 Invite Link:\n{link}\n\n🎁 প্রতি রেফারে +{REF_BONUS} SMS"
     )
 
-# ================= SMS WIZARD =================
+# ================= SMS FLOW =================
 async def start_sms_flow(update, context):
-    uid = update.effective_user.id
-    user_states[uid] = {"step": "number"}
+    user_states[update.effective_user.id] = {"step": "number"}
     await update.message.reply_text(
         "📱 যে নাম্বারে SMS পাঠাতে চাও সেটা পাঠাও\nউদাহরণ:\n01XXXXXXXX"
     )
 
 async def text_handler(update, context):
+    # 🔒 FORCE JOIN FOR ALL BUTTONS
+    if not await force_join(update, context):
+        return
+
     uid = update.effective_user.id
     text = update.message.text
 
@@ -195,6 +202,16 @@ async def sms_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     uid = q.from_user.id
 
+    # 🔒 FORCE JOIN AGAIN
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_USERNAME, uid)
+        if member.status not in ["member", "administrator", "creator"]:
+            await q.edit_message_text("❌ আগে চ্যানেলে Join করতে হবে")
+            return
+    except:
+        await q.edit_message_text("❌ আগে চ্যানেলে Join করতে হবে")
+        return
+
     if uid not in user_states:
         await q.edit_message_text("❌ Session expired")
         return
@@ -204,34 +221,33 @@ async def sms_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await q.edit_message_text("❌ SMS বাতিল করা হয়েছে")
         return
 
-    if q.data == "confirm_sms":
-        user = get_user(uid)
-        if user[1] <= 0:
-            await q.edit_message_text("❌ ব্যালেন্স শেষ")
-            user_states.pop(uid)
-            return
-
-        data = user_states[uid]
-        params = {
-            "apiKey": SMS_API_KEY,
-            "senderId": SENDER_ID,
-            "transactionType": TRANSACTION_TYPE,
-            "campaignId": CAMPAIGN_ID,
-            "mobileNo": data["number"],
-            "message": data["message"]
-        }
-
-        try:
-            r = requests.get(SMS_API_BASE, params=params, timeout=15)
-            if r.status_code == 200:
-                update_balance(uid, -1)
-                await q.edit_message_text("✅ SMS পাঠানো হয়েছে")
-            else:
-                await q.edit_message_text("❌ SMS পাঠানো যায়নি")
-        except Exception as e:
-            await q.edit_message_text(f"❌ Error: {e}")
-
+    user = get_user(uid)
+    if user[1] <= 0:
+        await q.edit_message_text("❌ ব্যালেন্স শেষ")
         user_states.pop(uid)
+        return
+
+    data = user_states[uid]
+    params = {
+        "apiKey": SMS_API_KEY,
+        "senderId": SENDER_ID,
+        "transactionType": TRANSACTION_TYPE,
+        "campaignId": CAMPAIGN_ID,
+        "mobileNo": data["number"],
+        "message": data["message"]
+    }
+
+    try:
+        r = requests.get(SMS_API_BASE, params=params, timeout=15)
+        if r.status_code == 200:
+            update_balance(uid, -1)
+            await q.edit_message_text("✅ SMS পাঠানো হয়েছে")
+        else:
+            await q.edit_message_text("❌ SMS পাঠানো যায়নি")
+    except Exception as e:
+        await q.edit_message_text(f"❌ Error: {e}")
+
+    user_states.pop(uid)
 
 # ================= ADMIN =================
 async def admin(update, context):
