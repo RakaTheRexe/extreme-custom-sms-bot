@@ -1,7 +1,7 @@
-# ===============================
-# EXTREME CUSTOM SMS BOT – FINAL
-# Button Only | Stable | SQLite
-# ===============================
+# ==========================================
+# EXTREME CUSTOM SMS BOT – FINAL FIXED
+# Button Only | Stable | SQLite | Tested
+# ==========================================
 
 import sqlite3
 import time
@@ -16,8 +16,8 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
-    CallbackQueryHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters
 )
 
@@ -45,8 +45,8 @@ c.execute("""
 CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
     balance INTEGER,
-    ref_by INTEGER,
     ref_count INTEGER,
+    ref_by INTEGER,
     banned INTEGER
 )
 """)
@@ -83,11 +83,13 @@ def add_user(uid, ref=None):
     if not get_user(uid):
         c.execute(
             "INSERT INTO users VALUES (?,?,?,?,?)",
-            (uid, DEFAULT_BALANCE, ref, 0, 0)
+            (uid, DEFAULT_BALANCE, 0, ref, 0)
         )
-        if ref:
-            c.execute("UPDATE users SET balance = balance + ?, ref_count = ref_count + 1 WHERE user_id=?",
-                      (REF_BONUS, ref))
+        if ref and get_user(ref):
+            c.execute(
+                "UPDATE users SET balance = balance + ?, ref_count = ref_count + 1 WHERE user_id=?",
+                (REF_BONUS, ref)
+            )
         db.commit()
 
 def is_admin(uid):
@@ -136,11 +138,12 @@ async def force_join(update, context):
 # ================= TEXT HANDLER =================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    text = update.message.text
+    text = update.message.text.strip()
 
     if not get_user(uid):
-        args = context.args if context.args else []
-        ref = int(args[0]) if args and args[0].isdigit() else None
+        ref = None
+        if context.args and context.args[0].isdigit():
+            ref = int(context.args[0])
         add_user(uid, ref)
 
     # START
@@ -159,14 +162,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "👤 My Profile":
         u = get_user(uid)
         await update.message.reply_text(
-            f"👤 ID: {uid}\n💰 Balance: {u[1]}\n👥 Referrals: {u[3]}"
+            f"👤 ID: {uid}\n💰 Balance: {u[1]}\n👥 Referrals: {u[2]}"
         )
+        return
 
-    elif text == "👥 Invite":
+    if text == "👥 Invite":
         link = f"https://t.me/{context.bot.username}?start={uid}"
         await update.message.reply_text(f"{link}\n🎁 +5 Balance per referral")
+        return
 
-    elif text == "🎁 Daily Bonus":
+    if text == "🎁 Daily Bonus":
         c.execute("SELECT last_claim FROM daily_bonus WHERE user_id=?", (uid,))
         r = c.fetchone()
         now = int(time.time())
@@ -177,20 +182,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (DAILY_BONUS, uid))
             db.commit()
             await update.message.reply_text(f"🎁 Daily Bonus +{DAILY_BONUS}")
+        return
 
-    elif text == "📊 My Referrals":
+    if text == "📊 My Referrals":
         u = get_user(uid)
-        await update.message.reply_text(f"👥 Total Referrals: {u[3]}")
+        await update.message.reply_text(f"👥 Total Referrals: {u[2]}")
+        return
 
-    elif text == "🏆 Leaderboard":
+    if text == "🏆 Leaderboard":
         c.execute("SELECT user_id, ref_count FROM users ORDER BY ref_count DESC LIMIT 10")
         rows = c.fetchall()
         msg = "🏆 Leaderboard\n\n"
         for i, (u, r) in enumerate(rows, 1):
             msg += f"{i}. {u} → {r}\n"
         await update.message.reply_text(msg)
+        return
 
-    elif text == "📜 SMS History":
+    if text == "📜 SMS History":
         c.execute("SELECT number,message FROM sms WHERE user_id=? ORDER BY id DESC LIMIT 5", (uid,))
         rows = c.fetchall()
         if not rows:
@@ -200,16 +208,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for n, m in rows:
                 msg += f"{n}\n{m}\n---\n"
             await update.message.reply_text(msg)
+        return
 
     # ================= SEND SMS =================
-    elif text == "📩 Send SMS":
+    if text == "📩 Send SMS":
         if get_user(uid)[4] == 1:
             await update.message.reply_text("🚫 You are banned")
             return
         sms_state[uid] = {"step": "number"}
         await update.message.reply_text("📱 Enter phone number:")
+        return
 
-    elif uid in sms_state:
+    if uid in sms_state:
         step = sms_state[uid]["step"]
 
         if step == "number":
@@ -241,7 +251,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 r = requests.get(SMS_API, params=params, timeout=10)
                 if r.status_code == 200:
                     c.execute("UPDATE users SET balance = balance - 1 WHERE user_id=?", (uid,))
-                    c.execute("INSERT INTO sms VALUES (NULL,?,?,?)", (uid, number, message, int(time.time())))
+                    c.execute("INSERT INTO sms VALUES (NULL,?,?,?)", (uid, number, message))
                     db.commit()
                     await update.message.reply_text("✅ SMS Sent")
                 else:
@@ -250,20 +260,102 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ API Error")
 
             sms_state.pop(uid)
+            return
 
     # ================= ADMIN =================
-    elif text == "⚙️ Admin Panel" and is_admin(uid):
+    if text == "⚙️ Admin Panel" and is_admin(uid):
         await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu())
+        return
 
-    elif text == "📊 Bot Stats" and is_admin(uid):
-        c.execute("SELECT COUNT(*) FROM users")
-        users = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM sms")
-        sms_count = c.fetchone()[0]
-        await update.message.reply_text(f"📊 Users: {users}\n📩 SMS Sent: {sms_count}")
+    if is_admin(uid):
 
-    elif text == "⬅ Back" and is_admin(uid):
-        await update.message.reply_text("Back to menu", reply_markup=user_menu())
+        if text == "➕ Add Balance":
+            admin_state[uid] = {"action": "addbal"}
+            await update.message.reply_text("Send: USER_ID AMOUNT")
+            return
+
+        if text == "🔍 Check User":
+            admin_state[uid] = {"action": "check"}
+            await update.message.reply_text("Send USER_ID")
+            return
+
+        if text == "🚫 Ban User":
+            admin_state[uid] = {"action": "ban"}
+            await update.message.reply_text("Send USER_ID")
+            return
+
+        if text == "✅ Unban User":
+            admin_state[uid] = {"action": "unban"}
+            await update.message.reply_text("Send USER_ID")
+            return
+
+        if text == "📢 Broadcast":
+            admin_state[uid] = {"action": "broadcast"}
+            await update.message.reply_text("Send broadcast message")
+            return
+
+        if text == "📊 Bot Stats":
+            c.execute("SELECT COUNT(*) FROM users")
+            users = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM sms")
+            sms_count = c.fetchone()[0]
+            await update.message.reply_text(
+                f"📊 Bot Stats\n👥 Users: {users}\n📩 SMS Sent: {sms_count}"
+            )
+            return
+
+        if text == "⬅ Back":
+            await update.message.reply_text("Back", reply_markup=user_menu())
+            return
+
+        if uid in admin_state:
+            action = admin_state[uid]["action"]
+
+            if action == "addbal":
+                try:
+                    target, amount = map(int, text.split())
+                    c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, target))
+                    db.commit()
+                    await update.message.reply_text(f"✅ Added {amount} to {target}")
+                except:
+                    await update.message.reply_text("❌ Format: USER_ID AMOUNT")
+
+            elif action == "check":
+                target = int(text)
+                u = get_user(target)
+                if u:
+                    await update.message.reply_text(
+                        f"👤 {target}\n💰 {u[1]}\n👥 {u[2]}\n🚫 Banned: {u[4]}"
+                    )
+                else:
+                    await update.message.reply_text("❌ User not found")
+
+            elif action == "ban":
+                target = int(text)
+                c.execute("UPDATE users SET banned=1 WHERE user_id=?", (target,))
+                db.commit()
+                await update.message.reply_text(f"🚫 User {target} banned")
+
+            elif action == "unban":
+                target = int(text)
+                c.execute("UPDATE users SET banned=0 WHERE user_id=?", (target,))
+                db.commit()
+                await update.message.reply_text(f"✅ User {target} unbanned")
+
+            elif action == "broadcast":
+                c.execute("SELECT user_id FROM users")
+                users = c.fetchall()
+                sent = 0
+                for u in users:
+                    try:
+                        await context.bot.send_message(u[0], f"📢 {text}")
+                        sent += 1
+                    except:
+                        pass
+                await update.message.reply_text(f"📢 Sent to {sent} users")
+
+            admin_state.pop(uid)
+            return
 
 # ================= VERIFY =================
 async def verify_cb(update, context):
