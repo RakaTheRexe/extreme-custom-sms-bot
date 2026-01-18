@@ -1,13 +1,12 @@
 # ===============================
 # EXTREME CUSTOM SMS BOT – FINAL
-# Button-Only | Stable | SQLite
+# Button Only | Stable | SQLite
 # ===============================
 
-import os
 import sqlite3
 import time
 import requests
-from datetime import datetime
+import asyncio
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -23,42 +22,15 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = os.getenv(
-    "TELEGRAM_TOKEN",
-    "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
-)
+BOT_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
+ADMIN_ID = 7008757477
+CHANNEL = "@ExtremeLevelTech"
 
-ADMIN_ID = int(os.getenv(
-    "ADMIN_ID",
-    "7008757477"
-))
-
-CHANNEL = os.getenv(
-    "CHANNEL",
-    "@ExtremeLevelTech"
-)
-
-SMS_API = os.getenv(
-    "SMS_API_URL",
-    "http://sms.greenheritageit.com/smsapi"
-)
-
-SMS_API_KEY = os.getenv(
-    "SMS_API_KEY",
-    "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
-)
-
-SENDER_ID = os.getenv(
-    "SENDER_ID",
-    "MultiSports"
-)
-
+SMS_API = "http://sms.greenheritageit.com/smsapi"
+SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
+SENDER_ID = "MultiSports"
 TRANSACTION_TYPE = "TransactionType"
 CAMPAIGN_ID = "campaignId"
-
-# ===== SAFETY CHECK =====
-if not BOT_TOKEN:
-    raise RuntimeError("❌ TELEGRAM_TOKEN missing")
 
 DEFAULT_BALANCE = 10
 REF_BONUS = 5
@@ -75,8 +47,7 @@ CREATE TABLE IF NOT EXISTS users(
     balance INTEGER,
     ref_by INTEGER,
     ref_count INTEGER,
-    banned INTEGER,
-    joined INTEGER
+    banned INTEGER
 )
 """)
 
@@ -99,6 +70,10 @@ CREATE TABLE IF NOT EXISTS daily_bonus(
 
 db.commit()
 
+# ================= STATES =================
+sms_state = {}
+admin_state = {}
+
 # ================= HELPERS =================
 def get_user(uid):
     c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
@@ -107,9 +82,12 @@ def get_user(uid):
 def add_user(uid, ref=None):
     if not get_user(uid):
         c.execute(
-            "INSERT INTO users VALUES (?,?,?,?,?,?)",
-            (uid, DEFAULT_BALANCE, ref, 0, 0, int(time.time()))
+            "INSERT INTO users VALUES (?,?,?,?,?)",
+            (uid, DEFAULT_BALANCE, ref, 0, 0)
         )
+        if ref:
+            c.execute("UPDATE users SET balance = balance + ?, ref_count = ref_count + 1 WHERE user_id=?",
+                      (REF_BONUS, ref))
         db.commit()
 
 def is_admin(uid):
@@ -123,7 +101,7 @@ def user_menu():
             ["👥 Invite", "🎁 Daily Bonus"],
             ["📊 My Referrals", "🏆 Leaderboard"],
             ["📜 SMS History", "🆘 Support"],
-            ["⚙️ Admin Panel"] if True else []
+            ["⚙️ Admin Panel"]
         ],
         resize_keyboard=True
     )
@@ -149,13 +127,10 @@ async def force_join(update, context):
         pass
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL.lstrip('@')}")],
+        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL[1:]}")],
         [InlineKeyboardButton("✅ Verify", callback_data="verify")]
     ])
-    await update.message.reply_text(
-        "❌ Please join our channel first",
-        reply_markup=kb
-    )
+    await update.message.reply_text("❌ Join channel first", reply_markup=kb)
     return False
 
 # ================= TEXT HANDLER =================
@@ -164,19 +139,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if not get_user(uid):
-        add_user(uid)
+        args = context.args if context.args else []
+        ref = int(args[0]) if args and args[0].isdigit() else None
+        add_user(uid, ref)
 
+    # START
     if text == "/start":
         if not await force_join(update, context):
             return
         await update.message.reply_text("✅ Bot Ready", reply_markup=user_menu())
         return
 
+    # SUPPORT
     if text == "🆘 Support":
-        await update.message.reply_text("Support: @RexeTheRaka")
+        await update.message.reply_text("🆘 Support: @RexeTheRaka")
         return
 
-    # ---------- USER ----------
+    # ================= USER =================
     if text == "👤 My Profile":
         u = get_user(uid)
         await update.message.reply_text(
@@ -185,39 +164,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "👥 Invite":
         link = f"https://t.me/{context.bot.username}?start={uid}"
-        await update.message.reply_text(
-            f"🔗 Invite Link:\n{link}\n🎁 +{REF_BONUS} Balance per referral"
-        )
+        await update.message.reply_text(f"{link}\n🎁 +5 Balance per referral")
 
     elif text == "🎁 Daily Bonus":
         c.execute("SELECT last_claim FROM daily_bonus WHERE user_id=?", (uid,))
         r = c.fetchone()
         now = int(time.time())
-
         if r and now - r[0] < DAY_SECONDS:
-            wait = DAY_SECONDS - (now - r[0])
-            await update.message.reply_text(
-                f"⏳ Already claimed.\nTry again after {wait//3600}h"
-            )
+            await update.message.reply_text("⏳ Already claimed today")
         else:
-            c.execute(
-                "INSERT OR REPLACE INTO daily_bonus VALUES (?,?)",
-                (uid, now)
-            )
-            c.execute(
-                "UPDATE users SET balance = balance + ? WHERE user_id=?",
-                (DAILY_BONUS, uid)
-            )
+            c.execute("INSERT OR REPLACE INTO daily_bonus VALUES (?,?)", (uid, now))
+            c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (DAILY_BONUS, uid))
             db.commit()
-            await update.message.reply_text(
-                f"🎁 Daily Bonus Claimed!\n➕ +{DAILY_BONUS} Balance"
-            )
+            await update.message.reply_text(f"🎁 Daily Bonus +{DAILY_BONUS}")
+
+    elif text == "📊 My Referrals":
+        u = get_user(uid)
+        await update.message.reply_text(f"👥 Total Referrals: {u[3]}")
+
+    elif text == "🏆 Leaderboard":
+        c.execute("SELECT user_id, ref_count FROM users ORDER BY ref_count DESC LIMIT 10")
+        rows = c.fetchall()
+        msg = "🏆 Leaderboard\n\n"
+        for i, (u, r) in enumerate(rows, 1):
+            msg += f"{i}. {u} → {r}\n"
+        await update.message.reply_text(msg)
 
     elif text == "📜 SMS History":
-        c.execute(
-            "SELECT number,message FROM sms WHERE user_id=? ORDER BY id DESC LIMIT 5",
-            (uid,)
-        )
+        c.execute("SELECT number,message FROM sms WHERE user_id=? ORDER BY id DESC LIMIT 5", (uid,))
         rows = c.fetchall()
         if not rows:
             await update.message.reply_text("No SMS history")
@@ -227,7 +201,57 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"{n}\n{m}\n---\n"
             await update.message.reply_text(msg)
 
-    # ---------- ADMIN ----------
+    # ================= SEND SMS =================
+    elif text == "📩 Send SMS":
+        if get_user(uid)[4] == 1:
+            await update.message.reply_text("🚫 You are banned")
+            return
+        sms_state[uid] = {"step": "number"}
+        await update.message.reply_text("📱 Enter phone number:")
+
+    elif uid in sms_state:
+        step = sms_state[uid]["step"]
+
+        if step == "number":
+            sms_state[uid]["number"] = text
+            sms_state[uid]["step"] = "message"
+            await update.message.reply_text("✉️ Enter message:")
+            return
+
+        if step == "message":
+            number = sms_state[uid]["number"]
+            message = text
+            u = get_user(uid)
+
+            if u[1] <= 0:
+                await update.message.reply_text("❌ No balance")
+                sms_state.pop(uid)
+                return
+
+            params = {
+                "apiKey": SMS_API_KEY,
+                "senderId": SENDER_ID,
+                "transactionType": TRANSACTION_TYPE,
+                "campaignId": CAMPAIGN_ID,
+                "mobileNo": number,
+                "message": message
+            }
+
+            try:
+                r = requests.get(SMS_API, params=params, timeout=10)
+                if r.status_code == 200:
+                    c.execute("UPDATE users SET balance = balance - 1 WHERE user_id=?", (uid,))
+                    c.execute("INSERT INTO sms VALUES (NULL,?,?,?)", (uid, number, message, int(time.time())))
+                    db.commit()
+                    await update.message.reply_text("✅ SMS Sent")
+                else:
+                    await update.message.reply_text("❌ SMS Failed")
+            except:
+                await update.message.reply_text("❌ API Error")
+
+            sms_state.pop(uid)
+
+    # ================= ADMIN =================
     elif text == "⚙️ Admin Panel" and is_admin(uid):
         await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu())
 
@@ -236,12 +260,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM sms")
         sms_count = c.fetchone()[0]
-        await update.message.reply_text(
-            f"📊 Bot Stats\n👥 Users: {users}\n📩 SMS Sent: {sms_count}"
-        )
+        await update.message.reply_text(f"📊 Users: {users}\n📩 SMS Sent: {sms_count}")
 
     elif text == "⬅ Back" and is_admin(uid):
-        await update.message.reply_text("Back to main menu", reply_markup=user_menu())
+        await update.message.reply_text("Back to menu", reply_markup=user_menu())
 
 # ================= VERIFY =================
 async def verify_cb(update, context):
@@ -250,13 +272,11 @@ async def verify_cb(update, context):
     await q.message.reply_text("✅ Verified", reply_markup=user_menu())
 
 # ================= MAIN =================
-def main():
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(MessageHandler(filters.TEXT, text_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(CallbackQueryHandler(verify_cb, pattern="verify"))
-
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
