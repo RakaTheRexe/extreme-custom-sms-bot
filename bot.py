@@ -250,12 +250,13 @@ async def verify_cb(update, context):
     await q.message.reply_text("✅ Verified", reply_markup=user_menu())
 
 # ================= MAIN =================
-async def main():
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
     app.add_handler(CallbackQueryHandler(verify_cb, pattern="verify"))
-    await app.run_polling()
+
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
