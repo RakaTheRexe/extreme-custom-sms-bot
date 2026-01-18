@@ -3,6 +3,7 @@
 # Button-Only | Stable | SQLite
 # ===============================
 
+import os
 import sqlite3
 import time
 import requests
@@ -22,15 +23,42 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
-ADMIN_ID = 7008757477
-CHANNEL = "@ExtremeLevelTech"
+BOT_TOKEN = os.getenv(
+    "TELEGRAM_TOKEN",
+    "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
+)
 
-SMS_API = "http://sms.greenheritageit.com/smsapi"
-SMS_API_KEY = "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
-SENDER_ID = "MultiSports"
+ADMIN_ID = int(os.getenv(
+    "ADMIN_ID",
+    "7008757477"
+))
+
+CHANNEL = os.getenv(
+    "CHANNEL",
+    "@ExtremeLevelTech"
+)
+
+SMS_API = os.getenv(
+    "SMS_API_URL",
+    "http://sms.greenheritageit.com/smsapi"
+)
+
+SMS_API_KEY = os.getenv(
+    "SMS_API_KEY",
+    "$2y$10$8cKMTQTz6E0hdmbghuOjS.NLPWxolWv99uTlHoLC5VCXWq//Wk1D277"
+)
+
+SENDER_ID = os.getenv(
+    "SENDER_ID",
+    "MultiSports"
+)
+
 TRANSACTION_TYPE = "TransactionType"
 CAMPAIGN_ID = "campaignId"
+
+# ===== SAFETY CHECK =====
+if not BOT_TOKEN:
+    raise RuntimeError("❌ TELEGRAM_TOKEN missing")
 
 DEFAULT_BALANCE = 10
 REF_BONUS = 5
@@ -94,7 +122,8 @@ def user_menu():
             ["📩 Send SMS", "👤 My Profile"],
             ["👥 Invite", "🎁 Daily Bonus"],
             ["📊 My Referrals", "🏆 Leaderboard"],
-            ["📜 SMS History", "🆘 Support"]
+            ["📜 SMS History", "🆘 Support"],
+            ["⚙️ Admin Panel"] if True else []
         ],
         resize_keyboard=True
     )
@@ -120,14 +149,14 @@ async def force_join(update, context):
         pass
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL[1:]}")],
+        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL.lstrip('@')}")],
         [InlineKeyboardButton("✅ Verify", callback_data="verify")]
     ])
-    await update.message.reply_text("❌ Please join our channel first", reply_markup=kb)
+    await update.message.reply_text(
+        "❌ Please join our channel first",
+        reply_markup=kb
+    )
     return False
-
-# ================= STATE =================
-state = {}
 
 # ================= TEXT HANDLER =================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,7 +167,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_user(uid)
 
     if text == "/start":
-        if not await force_join(update, context): return
+        if not await force_join(update, context):
+            return
         await update.message.reply_text("✅ Bot Ready", reply_markup=user_menu())
         return
 
@@ -156,7 +186,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "👥 Invite":
         link = f"https://t.me/{context.bot.username}?start={uid}"
         await update.message.reply_text(
-            f"🔗 Invite Link:\n{link}\n🎁 +5 Balance per referral"
+            f"🔗 Invite Link:\n{link}\n🎁 +{REF_BONUS} Balance per referral"
         )
 
     elif text == "🎁 Daily Bonus":
@@ -193,13 +223,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("No SMS history")
         else:
             msg = "📜 Last SMS:\n\n"
-            for n,m in rows:
+            for n, m in rows:
                 msg += f"{n}\n{m}\n---\n"
             await update.message.reply_text(msg)
 
     # ---------- ADMIN ----------
     elif text == "⚙️ Admin Panel" and is_admin(uid):
-        await update.message.reply_text("Admin Panel", reply_markup=admin_menu())
+        await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu())
 
     elif text == "📊 Bot Stats" and is_admin(uid):
         c.execute("SELECT COUNT(*) FROM users")
