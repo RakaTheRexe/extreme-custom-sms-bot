@@ -4,7 +4,7 @@ import requests
 import asyncio
 import os
 from datetime import datetime, date
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,9 +17,12 @@ from telegram.ext import (
 
 # ================== ⚙️ CONFIGURATION ==================
 TELEGRAM_TOKEN = "8345293297:AAHv6KfWaFsXJ-rlbJwupBqgTHbKt3CWS5U"
-ADMIN_ID = 7008757477  # Owner ID
-CHANNEL_USERNAME = "@ExtremeLevelTech" # Must be admin in channel
+ADMIN_ID = 7008757477
+CHANNEL_USERNAME = "@ExtremeLevelTech" 
 DEVELOPER_USERNAME = "@RexeTheRaka"
+
+# ✅ আপনার বটের ইউজারনেম আপডেট করা হয়েছে
+BOT_USERNAME = "extremecustomesms_bot" 
 
 # SMS API CONFIG
 SMS_API_BASE = "http://sms.greenheritageit.com/smsapi"
@@ -31,7 +34,7 @@ DB_FILE = "bot_database.db"
 DAILY_BONUS_AMOUNT = 2
 REFERRAL_REWARD = 5
 MIN_SMS_COST = 1
-RATE_LIMIT_SEC = 10  # Anti-spam delay
+RATE_LIMIT_SEC = 10 
 
 # STATES
 PHONE, MESSAGE, CONFIRM = range(3)
@@ -94,7 +97,7 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if member.status in ["member", "administrator", "creator"]:
             return True
     except:
-        return True # If bot is not admin in channel, skip check to avoid crash
+        return True 
     
     keyboard = [
         [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
@@ -135,7 +138,7 @@ def check_milestones(user_id, current_refs):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
-    context.user_data.clear() # Reset any stuck states
+    context.user_data.clear() 
     
     conn = get_db()
     c = conn.cursor()
@@ -143,7 +146,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = c.execute("SELECT * FROM users WHERE user_id=?", (user.id,)).fetchone()
     
     if not user_data:
-        # New User Registration
         referrer_id = None
         if args and args[0].isdigit():
             possible_ref = int(args[0])
@@ -151,9 +153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ref_user = c.execute("SELECT * FROM users WHERE user_id=?", (possible_ref,)).fetchone()
                 if ref_user:
                     referrer_id = possible_ref
-                    # Reward Referrer
                     c.execute("UPDATE users SET balance = balance + ?, ref_count = ref_count + 1 WHERE user_id=?", (REFERRAL_REWARD, referrer_id))
-                    # Milestone Check
                     bonus = check_milestones(referrer_id, ref_user['ref_count'] + 1)
                     
                     try:
@@ -166,9 +166,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   (user.id, user.first_name, user.username, 10, referrer_id, datetime.now().strftime("%Y-%m-%d")))
         conn.commit()
     
-    # Check Ban
     if user_data and user_data['is_banned']:
-        await update.message.reply_text("🚫 **You are BANNED from using this bot.**", parse_mode="Markdown")
+        await update.message.reply_text("🚫 **You are BANNED.**", parse_mode="Markdown")
         conn.close()
         return
 
@@ -199,13 +198,46 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     elif update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        except:
+            pass
     
     return ConversationHandler.END
 
 # ================== 👤 USER FEATURES ==================
+
+async def refer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    uid = query.from_user.id
+    # Link Generator with Correct Username
+    bot_link = f"https://t.me/{BOT_USERNAME}?start={uid}"
+    
+    conn = get_db()
+    c = conn.cursor()
+    u = c.execute("SELECT ref_count, balance FROM users WHERE user_id=?", (uid,)).fetchone()
+    conn.close()
+    
+    text = (
+        f"👥 **Invite & Earn**\n\n"
+        f"Share this link with your friends:\n"
+        f"`{bot_link}`\n\n"
+        f"📊 **Your Stats:**\n"
+        f"• Total Invites: {u['ref_count']}\n"
+        f"• Per Refer: {REFERRAL_REWARD} TK\n\n"
+        f"🎁 **Milestone Bonuses:**\n"
+        f"• 5 Refs: +20 TK\n"
+        f"• 10 Refs: +50 TK\n"
+        f"• 50 Refs: +200 TK"
+    )
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]), parse_mode="Markdown")
+
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     conn = get_db()
     u = conn.execute("SELECT * FROM users WHERE user_id=?", (query.from_user.id,)).fetchone()
     conn.close()
@@ -242,6 +274,7 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def leaderboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     conn = get_db()
     top = conn.execute("SELECT first_name, ref_count FROM users ORDER BY ref_count DESC LIMIT 10").fetchall()
     conn.close()
@@ -250,6 +283,16 @@ async def leaderboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     for i, u in enumerate(top, 1):
         text += f"{i}. {u['first_name']} - {u['ref_count']} Refs\n"
         
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]), parse_mode="Markdown")
+
+async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    conn = get_db()
+    logs = conn.execute("SELECT number, message, timestamp FROM sms_history WHERE user_id=? ORDER BY id DESC LIMIT 5", (query.from_user.id,)).fetchall()
+    conn.close()
+    
+    text = "📜 **SMS History**\n\n" + ("\n".join([f"🕒 {l['timestamp']}\n📱 {l['number']}\n✉️ {l['message']}\n" for l in logs]) if logs else "No history.")
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]), parse_mode="Markdown")
 
 # ================== 📩 SMS SENDING FLOW ==================
@@ -264,7 +307,7 @@ async def start_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if user['is_banned']:
-        await query.edit_message_text("🚫 You are banned from using this bot.")
+        await query.edit_message_text("🚫 You are banned.")
         return ConversationHandler.END
 
     if user['balance'] < MIN_SMS_COST:
@@ -304,10 +347,9 @@ async def send_sms_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = query.from_user.id
     
-    # Rate Limit Check
     last_time = context.user_data.get('last_sms_time', 0)
     if (datetime.now().timestamp() - last_time) < RATE_LIMIT_SEC:
-        await query.edit_message_text(f"⏳ **Please wait {RATE_LIMIT_SEC} seconds between SMS.**", 
+        await query.edit_message_text(f"⏳ **Please wait {RATE_LIMIT_SEC} seconds.**", 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="main_menu")]]), parse_mode="Markdown")
         return ConversationHandler.END
 
@@ -320,7 +362,6 @@ async def send_sms_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Insufficient Balance.")
         return ConversationHandler.END
 
-    # API Call
     try:
         await query.edit_message_text("🔄 **Sending SMS...**", parse_mode="Markdown")
         
@@ -332,17 +373,13 @@ async def send_sms_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "message": context.user_data['msg']
         }
         
-        # Uncomment below line for real sending
         r = requests.get(SMS_API_BASE, params=params, timeout=15)
         
-        # Checking Response (Adjust logic based on actual API response)
-        # Assuming HTTP 200 means success for now
-        status = "Success" if r.status_code == 200 else "Failed"
-        
-        if status == "Success":
+        # Check API status
+        if r.status_code == 200:
             c.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (MIN_SMS_COST, uid))
             c.execute("INSERT INTO sms_history (user_id, number, message, status, timestamp) VALUES (?, ?, ?, ?, ?)",
-                      (uid, context.user_data['to'], context.user_data['msg'], status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                      (uid, context.user_data['to'], context.user_data['msg'], "Sent", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             conn.commit()
             context.user_data['last_sms_time'] = datetime.now().timestamp()
             
@@ -363,16 +400,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if query.from_user.id != ADMIN_ID: return
     
-    text = "👮‍♂️ **Admin Dashboard**\nSelect an action:"
+    text = "👮‍♂️ **Admin Dashboard**"
     keyboard = [
-        [InlineKeyboardButton("📊 Statistics", callback_data="adm_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast")],
+        [InlineKeyboardButton("📊 Stats", callback_data="adm_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast")],
         [InlineKeyboardButton("➕ Add Balance", callback_data="adm_addbal"), InlineKeyboardButton("➖ Deduct/Reset", callback_data="adm_reset")],
         [InlineKeyboardButton("💾 Backup DB", callback_data="adm_backup"), InlineKeyboardButton("🚫 Ban User", callback_data="adm_ban")],
         [InlineKeyboardButton("🔙 Exit", callback_data="main_menu")]
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# Admin Sub-features
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     conn = get_db()
@@ -381,7 +417,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     money = conn.execute("SELECT SUM(balance) FROM users").fetchone()[0]
     conn.close()
     
-    text = f"📊 **Bot Statistics**\n\n👥 Users: {users}\n📩 SMS Sent: {sms}\n💰 Total User Balance: {money} TK"
+    text = f"📊 **Bot Statistics**\n\n👥 Users: {users}\n📨 SMS Sent: {sms}\n💰 Total User Balance: {money} TK"
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]), parse_mode="Markdown")
 
 async def admin_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -393,7 +429,6 @@ async def admin_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Error: {e}")
 
-# Admin Interactive Flows (Using simple MessageHandler for simplicity)
 async def admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -422,25 +457,23 @@ async def admin_process_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             uid, amt = map(int, msg.split())
             c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, uid))
             await update.message.reply_text(f"✅ Added {amt} TK to {uid}")
-            try: await context.bot.send_message(uid, f"🎁 **Admin added {amt} TK to your wallet.**")
+            try: await context.bot.send_message(uid, f"🎁 **Admin added {amt} TK.**")
             except: pass
             
         elif action == "adm_ban":
             uid = int(msg)
             c.execute("UPDATE users SET is_banned = 1 WHERE user_id=?", (uid,))
-            await update.message.reply_text(f"🚫 User {uid} has been BANNED.")
+            await update.message.reply_text(f"🚫 User {uid} BANNED.")
             
         elif action == "adm_broadcast":
             users = c.execute("SELECT user_id FROM users").fetchall()
             await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
-            count = 0
             for u in users:
                 try:
                     await update.message.copy(chat_id=u['user_id'])
-                    count += 1
                     await asyncio.sleep(0.05)
                 except: pass
-            await update.message.reply_text(f"✅ Sent to {count} users.")
+            await update.message.reply_text("✅ Broadcast Done.")
             
         elif action == "adm_reset":
             uid = int(msg)
@@ -449,12 +482,11 @@ async def admin_process_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             
         conn.commit()
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}\nTry again.")
+        await update.message.reply_text(f"❌ Error: {e}")
         conn.close()
         return ADMIN_INPUT
 
     conn.close()
-    # Show Admin Panel again
     keyboard = [[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]
     await update.message.reply_text("Action Completed.", reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
@@ -464,7 +496,6 @@ if __name__ == "__main__":
     init_db()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
-    # SMS Conversation
     sms_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_sms, pattern="sms_start")],
         states={
@@ -476,32 +507,28 @@ if __name__ == "__main__":
         allow_reentry=True
     )
     
-    # Admin Action Conversation
     admin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_prompt, pattern="^(adm_addbal|adm_broadcast|adm_ban|adm_reset)$")],
         states={ADMIN_INPUT: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_process_input)]},
         fallbacks=[CallbackQueryHandler(admin_panel, pattern="admin_panel")]
     )
     
-    # Commands
     app.add_handler(CommandHandler("start", start))
-    
-    # Conversations
     app.add_handler(sms_handler)
     app.add_handler(admin_conv)
     
-    # Callbacks
     app.add_handler(CallbackQueryHandler(daily_bonus, pattern="daily_bonus"))
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="profile"))
+    app.add_handler(CallbackQueryHandler(refer_handler, pattern="refer")) 
     app.add_handler(CallbackQueryHandler(leaderboard_handler, pattern="leaderboard"))
-    app.add_handler(CallbackQueryHandler(lambda u,c: show_main_menu(u,c, "💰 **Your Balance:** " + str(get_db().execute("SELECT balance FROM users WHERE user_id=?", (u.effective_user.id,)).fetchone()[0]) + " TK"), pattern="balance"))
-    app.add_handler(CallbackQueryHandler(lambda u,c: show_main_menu(u,c), pattern="main_menu"))
-    app.add_handler(CallbackQueryHandler(lambda u,c: u.callback_query.edit_message_text(f"👤 **Refer Link:**\nhttps://t.me/{context.bot.username}?start={u.effective_user.id}\n\n🎁 Reward: {REFERRAL_REWARD} TK", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="main_menu")]])), pattern="refer"))
+    app.add_handler(CallbackQueryHandler(history_handler, pattern="history"))
     
-    # Admin Panel
+    app.add_handler(CallbackQueryHandler(lambda u,c: show_main_menu(u,c, "💰 **Balance:** " + str(get_db().execute("SELECT balance FROM users WHERE user_id=?", (u.effective_user.id,)).fetchone()[0]) + " TK"), pattern="balance"))
+    app.add_handler(CallbackQueryHandler(lambda u,c: show_main_menu(u,c), pattern="main_menu"))
+    
     app.add_handler(CallbackQueryHandler(admin_panel, pattern="admin_panel"))
     app.add_handler(CallbackQueryHandler(admin_stats, pattern="adm_stats"))
     app.add_handler(CallbackQueryHandler(admin_backup, pattern="adm_backup"))
     
-    print("✅ Extreme SMS Bot Started...")
+    print("✅ Bot Started with USERNAME FIXED...")
     app.run_polling()
