@@ -42,7 +42,7 @@ RATE_LIMIT_SEC = 10
 
 # STATES
 PHONE, MESSAGE, CONFIRM = range(3)
-ADMIN_INPUT = range(1)
+ADMIN_INPUT = range(4) # New state for admin inputs
 
 # ================== 📝 LOGGING ==================
 logging.basicConfig(
@@ -122,32 +122,30 @@ def check_milestones(user_id, current_refs):
     conn.close()
     return total_bonus
 
-# ================== 🚀 MAIN MENU (BUTTON BAR) ==================
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    
-    # Persistent Keyboard Layout (Button Bar)
+# ================== 📱 MENUS (KEYBOARDS) ==================
+def get_main_menu_keyboard(user_id):
     keyboard = [
         ["📩 Send SMS", "💰 Balance"],
         ["🎁 Daily Bonus", "👤 My Profile"],
         ["👥 Invite Friends", "🏆 Leaderboard"],
         ["📜 History", "🆘 Support"]
     ]
-    
-    if user.id == ADMIN_ID:
+    if user_id == ADMIN_ID:
         keyboard.append(["⚙️ Admin Panel"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-    
-    text = (f"👋 **Hello {user.first_name}!**\n"
-            f"🤖 Welcome to Extreme SMS Bot.\n"
-            f"👇 নিচের মেনু থেকে অপশন সিলেক্ট করুন:")
-            
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+def get_admin_menu_keyboard():
+    keyboard = [
+        ["📊 Stats", "📢 Broadcast"],
+        ["➕ Add Balance", "➖ Deduct/Reset"],
+        ["💾 Backup DB", "🚫 Ban User"],
+        ["🔙 Back to Main Menu"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+# ================== 🚀 USER COMMANDS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    args = context.args
     context.user_data.clear() 
     
     conn = get_db()
@@ -156,6 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not user_data:
         referrer_id = None
+        args = context.args
         if args and args[0].isdigit():
             possible_ref = int(args[0])
             if possible_ref != user.id:
@@ -177,9 +176,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     conn.close()
-    await show_main_menu(update, context)
+    
+    text = (f"👋 **Hello {user.first_name}!**\n"
+            f"🤖 Welcome to Extreme SMS Bot.\n"
+            f"👇 নিচের মেনু থেকে অপশন সিলেক্ট করুন:")
+    await update.message.reply_text(text, reply_markup=get_main_menu_keyboard(user.id), parse_mode="Markdown")
 
-# ================== 👤 USER FEATURES ==================
+# ================== 👤 USER FEATURES HANDLERS ==================
+async def show_main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏠 **Main Menu**", reply_markup=get_main_menu_keyboard(update.effective_user.id), parse_mode="Markdown")
+    return ConversationHandler.END
 
 async def balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db()
@@ -190,11 +196,9 @@ async def balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     bot_link = f"https://t.me/{BOT_USERNAME}?start={uid}"
-    
     conn = get_db()
     u = conn.execute("SELECT ref_count FROM users WHERE user_id=?", (uid,)).fetchone()
     conn.close()
-    
     text = (f"👥 **Invite & Earn**\n\nLink: `{bot_link}`\n\n"
             f"📊 Total Invites: {u['ref_count']}\n💰 Per Refer: {REFERRAL_REWARD} TK\n\n"
             f"🎁 **Bonus:** 5 Refs = +20 TK, 10 Refs = +50 TK")
@@ -215,7 +219,6 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db()
     c = conn.cursor()
     user = c.execute("SELECT last_bonus_date, balance FROM users WHERE user_id=?", (user_id,)).fetchone()
-    
     if user['last_bonus_date'] == today:
         await update.message.reply_text("❌ **আজকের বোনাস নেওয়া হয়েছে!** আগামীকাল আবার চেষ্টা করুন।", parse_mode="Markdown")
     else:
@@ -241,6 +244,117 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🆘 **Support:**\nContact Admin: https://t.me/{DEVELOPER_USERNAME.replace('@', '')}")
+
+# ================== 👮‍♂️ ADMIN PANEL LOGIC (FIXED) ==================
+
+async def admin_panel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("👮‍♂️ **Admin Panel Opened**", reply_markup=get_admin_menu_keyboard(), parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def admin_features_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    
+    text = update.message.text
+    context.user_data['admin_action'] = text
+    
+    if text == "📊 Stats":
+        conn = get_db()
+        users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        sms = conn.execute("SELECT COUNT(*) FROM sms_history").fetchone()[0]
+        money = conn.execute("SELECT SUM(balance) FROM users").fetchone()[0]
+        conn.close()
+        await update.message.reply_text(f"📊 **Stats**\n\n👥 Users: {users}\n📨 SMS: {sms}\n💰 Total Balance: {money} TK")
+        return ConversationHandler.END
+        
+    elif text == "💾 Backup DB":
+        await context.bot.send_document(chat_id=ADMIN_ID, document=open(DB_FILE, 'rb'), caption="🗂 DB Backup")
+        return ConversationHandler.END
+        
+    # For inputs requiring text, we enter the ADMIN_INPUT state
+    elif text == "➕ Add Balance":
+        await update.message.reply_text("💰 **Add Balance**\n\nFormat: `User_ID Amount`\nExample: `12345 50`\n\nType below:", parse_mode="Markdown")
+        return ADMIN_INPUT
+        
+    elif text == "➖ Deduct/Reset":
+        await update.message.reply_text("🔄 **Reset/Deduct Balance**\n\nType `User_ID` to reset balance to 0.", parse_mode="Markdown")
+        return ADMIN_INPUT
+        
+    elif text == "🚫 Ban User":
+        await update.message.reply_text("🚫 **Ban User**\n\nType `User_ID` to ban.", parse_mode="Markdown")
+        return ADMIN_INPUT
+        
+    elif text == "📢 Broadcast":
+        await update.message.reply_text("📢 **Broadcast Message**\n\nSend the message (Text/Photo) you want to send to everyone.", parse_mode="Markdown")
+        return ADMIN_INPUT
+        
+    elif text == "🔙 Back to Main Menu":
+        await update.message.reply_text("🏠 Main Menu", reply_markup=get_main_menu_keyboard(ADMIN_ID))
+        return ConversationHandler.END
+
+async def admin_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    
+    action = context.user_data.get('admin_action')
+    msg = update.message.text
+    
+    # Safety check: If user clicks a button instead of typing text
+    if msg in ["🔙 Back to Main Menu", "📊 Stats", "➕ Add Balance", "💾 Backup DB"]:
+        await update.message.reply_text("❌ Action Cancelled.")
+        # Re-trigger the button press logic manually or just return to menu
+        return await admin_panel_entry(update, context)
+
+    conn = get_db()
+    c = conn.cursor()
+    
+    try:
+        if action == "➕ Add Balance":
+            try:
+                uid, amt = map(int, msg.split())
+                c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, uid))
+                await update.message.reply_text(f"✅ Successfully added {amt} TK to User `{uid}`.", parse_mode="Markdown")
+                try: await context.bot.send_message(uid, f"🎁 **Admin added {amt} TK to your balance.**")
+                except: pass
+            except ValueError:
+                await update.message.reply_text("❌ Invalid Format! Use: `UserID Amount`")
+                
+        elif action == "➖ Deduct/Reset":
+            try:
+                uid = int(msg)
+                c.execute("UPDATE users SET balance = 0 WHERE user_id=?", (uid,))
+                await update.message.reply_text(f"✅ Balance reset to 0 for User `{uid}`.", parse_mode="Markdown")
+            except ValueError:
+                await update.message.reply_text("❌ Invalid ID.")
+                
+        elif action == "🚫 Ban User":
+            try:
+                uid = int(msg)
+                c.execute("UPDATE users SET is_banned = 1 WHERE user_id=?", (uid,))
+                await update.message.reply_text(f"🚫 User `{uid}` has been BANNED.", parse_mode="Markdown")
+            except ValueError:
+                 await update.message.reply_text("❌ Invalid ID.")
+                 
+        elif action == "📢 Broadcast":
+            users = c.execute("SELECT user_id FROM users").fetchall()
+            await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
+            success = 0
+            for u in users:
+                try: 
+                    await update.message.copy(chat_id=u['user_id'])
+                    success += 1
+                    await asyncio.sleep(0.05)
+                except: pass
+            await update.message.reply_text(f"✅ Broadcast Sent to {success} users.")
+            
+        conn.commit()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+        
+    conn.close()
+    
+    # Stay in Admin Menu
+    await update.message.reply_text("👇 Select next action:", reply_markup=get_admin_menu_keyboard())
+    return ConversationHandler.END
 
 # ================== 📩 SMS SENDING FLOW ==================
 async def start_sms(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,88 +434,6 @@ async def send_sms_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     return ConversationHandler.END
 
-# ================== ⚙️ ADMIN PANEL ==================
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    text = "👮‍♂️ **Admin Dashboard**"
-    keyboard = [
-        [InlineKeyboardButton("📊 Stats", callback_data="adm_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast")],
-        [InlineKeyboardButton("➕ Add Balance", callback_data="adm_addbal"), InlineKeyboardButton("➖ Deduct/Reset", callback_data="adm_reset")],
-        [InlineKeyboardButton("💾 Backup DB", callback_data="adm_backup"), InlineKeyboardButton("🚫 Ban User", callback_data="adm_ban")]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    
-    if data == "adm_stats":
-        conn = get_db()
-        users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        sms = conn.execute("SELECT COUNT(*) FROM sms_history").fetchone()[0]
-        money = conn.execute("SELECT SUM(balance) FROM users").fetchone()[0]
-        conn.close()
-        await query.edit_message_text(f"📊 **Stats**\n\n👥 Users: {users}\n📨 SMS: {sms}\n💰 Total Balance: {money} TK", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]]))
-    
-    elif data == "adm_backup":
-        await context.bot.send_document(chat_id=ADMIN_ID, document=open(DB_FILE, 'rb'), caption="🗂 DB Backup")
-    
-    elif data == "adm_back":
-        keyboard = [
-            [InlineKeyboardButton("📊 Stats", callback_data="adm_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast")],
-            [InlineKeyboardButton("➕ Add Balance", callback_data="adm_addbal"), InlineKeyboardButton("➖ Deduct/Reset", callback_data="adm_reset")],
-            [InlineKeyboardButton("💾 Backup DB", callback_data="adm_backup"), InlineKeyboardButton("🚫 Ban User", callback_data="adm_ban")]
-        ]
-        await query.edit_message_text("👮‍♂️ **Admin Dashboard**", reply_markup=InlineKeyboardMarkup(keyboard))
-        return ConversationHandler.END
-        
-    elif data in ["adm_addbal", "adm_broadcast", "adm_ban", "adm_reset"]:
-        context.user_data['admin_action'] = data
-        prompts = {
-            "adm_addbal": "💰 **Add Balance**\nSend: `User_ID Amount`",
-            "adm_broadcast": "📢 **Broadcast**\nSend message.",
-            "adm_ban": "🚫 **Ban User**\nSend: `User_ID`",
-            "adm_reset": "🔄 **Reset Balance**\nSend: `User_ID`"
-        }
-        await query.edit_message_text(prompts[data], parse_mode="Markdown")
-        return ADMIN_INPUT
-
-async def admin_process_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
-    action = context.user_data.get('admin_action')
-    msg = update.message.text
-    conn = get_db()
-    c = conn.cursor()
-    
-    try:
-        if action == "adm_addbal":
-            uid, amt = map(int, msg.split())
-            c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, uid))
-            await update.message.reply_text(f"✅ Added {amt} TK to {uid}")
-            try: await context.bot.send_message(uid, f"🎁 **Admin added {amt} TK.**")
-            except: pass
-        elif action == "adm_ban":
-            uid = int(msg)
-            c.execute("UPDATE users SET is_banned = 1 WHERE user_id=?", (uid,))
-            await update.message.reply_text(f"🚫 User {uid} BANNED.")
-        elif action == "adm_broadcast":
-            users = c.execute("SELECT user_id FROM users").fetchall()
-            await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
-            for u in users:
-                try: await update.message.copy(chat_id=u['user_id'])
-                except: pass
-            await update.message.reply_text("✅ Done.")
-        elif action == "adm_reset":
-            uid = int(msg)
-            c.execute("UPDATE users SET balance = 0 WHERE user_id=?", (uid,))
-            await update.message.reply_text(f"🔄 Balance reset for {uid}.")
-        conn.commit()
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-    conn.close()
-    return ConversationHandler.END
-
 # ================== 🏁 MAIN EXECUTION ==================
 if __name__ == "__main__":
     init_db()
@@ -418,18 +450,23 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("start", start)],
     )
     
-    # Admin Flow
+    # Admin Conversation Flow (This handles the inputs after button clicks)
     admin_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_callback_handler, pattern="^adm_")],
-        states={ADMIN_INPUT: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_process_input)]},
-        fallbacks=[CallbackQueryHandler(admin_callback_handler, pattern="adm_back")]
+        entry_points=[
+            MessageHandler(filters.Regex("^(➕ Add Balance|➖ Deduct/Reset|🚫 Ban User|📢 Broadcast|📊 Stats|💾 Backup DB|🔙 Back to Main Menu)$"), admin_features_trigger)
+        ],
+        states={
+            ADMIN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_input_handler)]
+        },
+        fallbacks=[CommandHandler("start", start), MessageHandler(filters.Regex("^🔙 Back to Main Menu$"), show_main_menu_handler)]
     )
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(sms_handler)
-    app.add_handler(admin_conv)
+    app.add_handler(admin_conv) # IMPORTANT: Admin handler added
     
-    # Text Handlers for Button Bar
+    # User Menu Button Handlers
+    app.add_handler(MessageHandler(filters.Regex("^⚙️ Admin Panel$"), admin_panel_entry))
     app.add_handler(MessageHandler(filters.Regex("^💰 Balance$"), balance_handler))
     app.add_handler(MessageHandler(filters.Regex("^👤 My Profile$"), profile_handler))
     app.add_handler(MessageHandler(filters.Regex("^👥 Invite Friends$"), refer_handler))
@@ -437,7 +474,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("^🏆 Leaderboard$"), leaderboard_handler))
     app.add_handler(MessageHandler(filters.Regex("^📜 History$"), history_handler))
     app.add_handler(MessageHandler(filters.Regex("^🆘 Support$"), support_handler))
-    app.add_handler(MessageHandler(filters.Regex("^⚙️ Admin Panel$"), admin_panel))
     
-    print("✅ Bot Started with BUTTON BAR...")
+    print("✅ Bot Started with ADMIN BUTTON BAR & INPUT FIX...")
     app.run_polling()
